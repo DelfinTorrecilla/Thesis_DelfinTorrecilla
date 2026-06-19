@@ -1,0 +1,373 @@
+# =========================================================
+# 03_predAndPerf.R
+# Dedaptive-Modelle auf vorbereitetem person-level Datensatz rechnen
+# =========================================================
+
+rm(list = ls())
+
+# 0. Pfade und Einstellungen ============================================
+
+path_data  <- "./1_Data/1_Data_PW/2_Processed/data_26_06_05.rds"
+path_model <- "./1_Data/1_Data_PW/3_Output/models_26_06_05.rds"
+output_dir <- "./3_Output/"
+
+
+usedThres      <- NULL
+usedCores      <- 6
+usedCores_pred <- 1
+usedSeed       <- 1
+
+usedNrSimTheta <- 1000
+usedNrSimItems <- 10
+
+# FP and FN
+costsFn <- c(0.5, 0.5)
+costsFp <- c(0.5, 0.5)
+
+# Zuerst Wide und danach Fine runen lassen. Auskommentier-Funktion
+# # wide
+# usedCostMeas <- seq(0, 0.1, by=0.01)
+# outName    <- "26_06_05_wide"
+
+# Fine
+# usedCostMeas <- seq(0.02, 0.03, by=0.001)
+# usedCostMeas <- seq(0.01, 0.03, by=0.001)
+usedCostMeas <- seq(0, 0.05, by = 0.001)
+outName    <- "26_06_05_fine_fine"
+
+
+# 0.054 ~ 1 nItems
+
+# 1. Pakete und Funktionen ==============================================
+
+required_pkgs <- c("dedaptive", "groupdata2", "knitr")
+
+missing_pkgs <- required_pkgs[
+  !vapply(required_pkgs, requireNamespace, logical(1), quietly = TRUE)
+]
+
+if (length(missing_pkgs) > 0) {
+  stop(
+    paste0(
+      "Bitte zuerst diese Pakete installieren: ",
+      paste(missing_pkgs, collapse = ", ")
+    )
+  )
+}
+
+library(dedaptive)
+library(groupdata2)
+library(knitr)
+
+source("1_Data/1_Data_PW/dedaptiveExtended.R")
+
+# 2. Daten und Modell laden =============================================
+
+inputData   <- readRDS(path_data)
+inputModels <- readRDS(path_model)
+
+dataTrain <- inputData$dataTrain
+dataTest  <- inputData$dataTest
+
+mirtVars <- inputModels$mirtVars
+itemsWork <- inputModels$itemsChosen
+depVar    <- inputModels$depVar
+satVar    <- inputModels$satVar
+bestModel <- inputModels$bestModel
+
+usedThres <- c(
+  median(dataTrain[[depVar]]),
+  median(dataTrain[[satVar]])
+)
+
+cat("Verwendete Thresholds:\n")
+print(usedThres)
+
+cat("Klassen depVar:\n")
+print(table(dataTrain[[depVar]] >= usedThres[1], useNA = "ifany"))
+
+cat("Klassen satVar:\n")
+print(table(dataTrain[[satVar]] >= usedThres[2], useNA = "ifany"))
+
+itemsAll <- c(depVar, satVar, itemsWork)
+
+# Complete cases für Vorhersage-Datensatz
+vars_needed <- c("idpers", depVar, satVar, itemsWork)
+
+dataTest_cc <- dataTest[
+  complete.cases(dataTest[, vars_needed]),
+]
+
+cat("N dataTest original:", nrow(dataTest), "\n")
+cat("N dataTest complete cases:", nrow(dataTest_cc), "\n")
+
+modelsIrt <- list()
+
+modelsIrt[[1]] <- list(
+  model = bestModel,
+  dataTest = dataTest_cc,
+  fold = "1"
+)
+
+# 3. External criteria und Kosten definieren =============================
+
+externalCriteria <- list(
+  function(x) as.numeric(x[1]),   # Depressive Symptome
+  function(x) as.numeric(x[2])    # Arbeitszufriedenheit
+)
+
+prevDep <- mean(dataTrain[[depVar]] >= usedThres[1], na.rm = TRUE)
+prevSat <- mean(dataTrain[[satVar]] >= usedThres[2], na.rm = TRUE)
+
+cat("prevDep:", prevDep, "\n")
+cat("prevSat:", prevSat, "\n")
+
+if (prevDep <= 0 || prevDep >= 1) {
+  stop("prevDep ist 0 oder 1. Threshold für depVar prüfen.")
+}
+
+if (prevSat <= 0 || prevSat >= 1) {
+  stop("prevSat ist 0 oder 1. Threshold für satVar prüfen.")
+}
+
+
+# 4. Vorhersagen mit allen Items ========================================
+
+outAllItems <- cvDecisionIrt(
+  modelList = modelsIrt,
+  selection = "fixed",                      # switch: fixed zu dedaptive 
+  idName = "idpers",
+  nCore = usedCores_pred,
+  parallelFold = FALSE,
+  seed = usedSeed + 2,
+  givenVar = itemsWork,
+  thres = usedThres,
+  funOfItems = externalCriteria,
+  nSimTheta = usedNrSimTheta,
+  nSimItem = usedNrSimItems
+)
+
+head(outAllItems$pred)
+
+# 5. Prior item response distribution vorhersagen ========================
+
+# t1 <- Sys.time()
+# 
+# predPriorList <- cvPredPriorJointDistRespIrt(
+#   modelList = modelsIrt,
+#   idName = "idpers",
+#   nCore = usedCores_pred,
+#   parallelFold = FALSE,
+#   seed = usedSeed,
+#   nSimTheta = usedNrSimTheta,
+#   nSimItem = usedNrSimItems
+# )
+# 
+# cat("Runtime for cvPredPriorJointDistRespIrt:", Sys.time() - t1, "\n")
+
+# Predict prior for one subject (because it is always the same)
+predPrior<- predJointDistRespIrt(bestModel, 
+                                 dataSub = dataTest_cc[1, ], 
+                                 seed = usedSeed,
+                                 nSimTheta = usedNrSimTheta,
+                                 nSimItem = usedNrSimItems)
+
+# Create a list for all participants (structure as with cvPredPriorJointDistRespIrt)
+predPriorListEntry<- list(pred=predPrior, fold="1")
+predPriorList <- replicate(nrow(dataTest_cc), predPriorListEntry, 
+                           simplify = FALSE)
+names(predPriorList)<- sort(unique(dataTest_cc$idpers))
+
+
+
+saveRDS(
+  predPriorList,
+  file.path(output_dir, paste0("predPriorList_", outName, ".rds"))
+)
+
+# 6. Dedaptive-Lauf über measurement costs ===============================
+
+allDedaptive <- vector("list", length(usedCostMeas))
+allEvalRes   <- vector("list", length(usedCostMeas))
+
+names(allDedaptive) <- paste0("cost_", usedCostMeas)
+names(allEvalRes)   <- paste0("cost_", usedCostMeas)
+
+predAll <- NULL
+perfAll <- NULL
+
+for (m in seq_along(usedCostMeas)) {
+  
+  cm <- usedCostMeas[m]
+  
+  cat(
+    "\nCurrent cost structure (",
+    m,
+    "), measurement cost per item = ",
+    cm,
+    "\n"
+  )
+  
+  costList <- list(costsFp, costsFn, cm)
+  
+  if (any(!is.finite(unlist(costList)))) {
+    stop("costList enthält Inf oder NA. Bitte usedThres und Prävalenzen prüfen.")
+  }
+  
+  t1 <- Sys.time()
+  
+  outDedaptive <- cvDecisionIrt(
+    modelList = modelsIrt,
+    selection = "dedaptive",
+    idName = "idpers",
+    predJointList = predPriorList,
+    nCore = usedCores_pred,
+    parallelFold = FALSE,
+    seed = usedSeed + 2 + m,
+    costs = costList,
+    thres = usedThres,
+    funOfItems = externalCriteria,
+    itemsExclude = c(depVar, satVar),
+    nSimTheta = usedNrSimTheta,
+    nSimItem = usedNrSimItems
+  )
+  
+
+  
+  cat("Time for cost structure ", m, ": ", Sys.time() - t1, "\n")
+  
+  predObj <- outDedaptive$pred
+  
+  evalDedaptive <- tryCatch(
+    {
+      evalMultOb(predObj, costList)
+    },
+    error = function(e) {
+      message("Dedaptive konnte nicht berechnet werden: ", e$message)
+      return(NULL)
+    }
+  )
+  
+  allDedaptive[[m]] <- outDedaptive
+  
+  allEvalRes[[m]] <- list(
+    dedaptive = evalDedaptive
+  )
+  
+  predObAllItems<- outAllItems$pred
+  evalAllItems<- evalMultOb(predObAllItems, costList)
+  
+ 
+  
+  if (!is.null(evalDedaptive) || !is.null(evalAllItems)) {
+    
+    predDedaptive <- evalDedaptive$pred
+    perfDedaptive <- evalDedaptive$perf
+    
+    predDedaptive$type <- "dedaptive"
+    perfDedaptive$type <- "dedaptive"
+    
+    predDedaptive$measurement_cost <- cm
+    perfDedaptive$measurement_cost <- cm
+    
+    predAllItems <- evalAllItems$pred
+    perfAllItems <- evalAllItems$perf
+    
+    predAllItems$type <- "all"
+    perfAllItems$type <- "all"
+    
+    predAllItems$measurement_cost <- cm
+    perfAllItems$measurement_cost <- cm
+    
+    if (is.null(predAll)) {
+      
+      predAll <- rbind(predDedaptive, predAllItems)
+      perfAll <- rbind(perfDedaptive, perfAllItems)
+      
+    } else {
+      
+      predAll <- rbind(predAll, predDedaptive, predAllItems)
+      perfAll <- rbind(perfAll, perfDedaptive, perfAllItems)
+      
+    }
+    
+    print("#---------- Dedaptive")
+    print(predDedaptive)
+    
+    print("#---------- All Items")
+    print(perfAllItems)
+    
+    write.csv(
+      predAll,
+      file.path(
+        output_dir,
+        paste0(
+          "predSeq_",
+          outName,
+          "_nTheta", usedNrSimTheta,
+          "_nItems_", usedNrSimItems,
+          ".csv"
+        )
+      ),
+      row.names = FALSE
+    )
+    
+    write.csv(
+      perfAll,
+      file.path(
+        output_dir,
+        paste0(
+          "perfSeq_",
+          outName,
+          "_nTheta", usedNrSimTheta,
+          "_nItems_", usedNrSimItems,
+          ".csv"
+        )
+      ),
+      row.names = FALSE
+    )
+    
+  } else {
+    
+    cat(
+      "Evaluation für measurement cost",
+      cm,
+      "übersprungen.\n"
+    )
+    
+  }
+}
+
+# 7. Alles gemeinsam speichern ==========================================
+
+results <- list(
+  settings = list(
+    usedSeed = usedSeed,
+    usedCores = usedCores,
+    usedCores_pred = usedCores_pred,
+    usedNrSimTheta = usedNrSimTheta,
+    usedNrSimItems = usedNrSimItems,
+    usedCostMeas = usedCostMeas,
+    usedThres = usedThres,
+    itemsAll = itemsAll,
+    depVar = depVar,
+    satVar = satVar,
+    n_dataTest_original = nrow(dataTest),
+    n_dataTest_complete_cases = nrow(dataTest_cc),
+    created = Sys.time()
+  ),
+  modelsIrt = modelsIrt,
+  predAllItems = outAllItems,
+  predPriorList = predPriorList,
+  allDedaptive = allDedaptive,
+  allEvalRes = allEvalRes,
+  predAll = predAll,
+  perfAll = perfAll
+)
+
+saveRDS(
+  results,
+  file.path(output_dir, paste0("full_analysis_results_", outName, ".rds"))
+)
+
+cat("Alle Modellresultate erfolgreich gespeichert.\n")
