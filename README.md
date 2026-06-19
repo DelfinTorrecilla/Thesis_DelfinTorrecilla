@@ -1,4 +1,4 @@
-# Master-Thesis - Delfin Torrecilla, 06/06/2026
+# Master-Thesis - Delfin Torrecilla
 Title: Entscheidungsorientiertes adaptives Testen auf Basis von Arbeitsbedingungen für arbeitsbezogene Entscheidungen
 R code for the master's thesis on DEcision-Oriented aDAPTIVE (DOAT)
 Used for thesis.
@@ -51,3 +51,5 @@ The scripts in this repository document the application, adaptation and analysis
 - [GitHub repository of Dr. Patric Wyss: extended https://github.com/Statric/dedaptive_extended]
 
 This repository focuses on the implementation and analyses conducted within the context of the present master's thesis.
+
+06/2026
