@@ -1,4 +1,5 @@
-# Thesis_DelfinTorrecilla
+# Master-Thesis from Delfin Torrecilla
+Titel - Entscheidungsorientiertes adaptives Testen auf Basis von Arbeitsbedingungen für arbeitsbezogene Entscheidungen
 R code for the master's thesis on DEcision-Oriented aDAPTIVE (DOAT)
 Used for thesis.
 
