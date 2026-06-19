@@ -1,0 +1,250 @@
+# =========================================================
+# 01_prepareDataAndTraining.R
+# Masterfile laden, t0/t1-Datensatz bauen, eine Zeile pro Person, 
+# Train / Test data split
+# Erstellt:
+# 1) Items mit genügend Werten (nicht fehlenden)
+# 2) Training und Test Datensatz
+# =========================================================
+
+# 0. Input ================================================
+rm(list = ls())
+
+# Pfade
+path_masterfile <- "1_Data/1_Data_PW/1_Data/Masterfile_allYears.csv"
+processed_dir <- "1_Data/1_Data_PW/2_Processed"
+
+# Name output file
+outName<- "26_06_05"
+
+# Variablen
+idVars <- c("idpers", "year", "pdate") #pdate = Datum der persönlichen Befragung
+demoVars <- c("sex", "age")
+
+# Startpool Arbeitsbedingungen
+itemsAll <- c(
+  "pw17","pw34a","pw36","pw37",
+  "pw39","pw42","pw43","pw71a","pw80",
+  "pw87","pw90","pw91","pw93","pw94",
+  "pw95","pw96","pw216","pw218",
+  "pw229","pw230",
+  "pw603","pw604","pw605","pw606",
+  "pw607","pw610","pw613","pw615",
+  "pw616"
+)
+
+# Outcomes am gleichen Zeitpunkt wie Arbeitsbedingungen (t0)
+criteriaVars_t0 <- c(
+  depr_t0 = "pc17",
+  job_t0  = "pw18"    #Wechsel der Arbeit oder des Arbeitgebers: Letzte 12 Monate
+)
+
+# Falls im Masterfile bereits 1-Jahres-Folgevariablen vorliegen
+criteriaVars_t1_direct <- c(
+  depr_t1 = "dep1Y",
+  job_t1  = "job1Y",
+  sat_t1  = "pw228"
+)
+
+# Falls dep1Y / job1Y nicht vorhanden oder nicht genutzt werden sollen,
+# kann alternativ über year + 1 verknüpft werden.
+use_direct_followup_vars <- TRUE
+
+# Minimale Anforderungen
+missing_item_threshold <- 0.2
+min_answered_items <- 5
+
+# Train / Test Split
+usedPropTest<- 0.05
+usedNrFolds <- 10
+usedSeed <- 2745
+
+# 1. Pakete und Funktionen ================================================
+
+required_pkgs <- c("dplyr", "readr", "knitr")
+missing_pkgs <- required_pkgs[!vapply(required_pkgs, requireNamespace, logical(1), quietly = TRUE)]
+if (length(missing_pkgs) > 0) {
+  stop(
+    paste0(
+      "Bitte zuerst diese Pakete installieren: ",
+      paste(missing_pkgs, collapse = ", ")
+    )
+  )
+}
+
+library(dplyr)
+library(knitr)
+library(readr)
+library(groupdata2)
+# 2. Masterfile einlesen ===================================
+
+cat("Lese Masterfile ein...\n")
+
+master<- read.csv(path_masterfile)
+cat("Dimensionen Masterfile:", dim(master), "\n")
+
+# 3. Benötigte Variablen definieren ========================
+
+vars_needed <- unique(c(
+  idVars,
+  demoVars,
+  itemsAll,
+  "pw228",     # Aktuelle Haupttätigkeit: Zufriedenheit: Arbeit im Allgemeinen
+  unname(criteriaVars_t0),
+  if (isTRUE(use_direct_followup_vars)) unname(criteriaVars_t1_direct) else NULL
+))
+
+missing_vars <- setdiff(vars_needed, names(master))
+if (length(missing_vars) > 0) {
+  stop(
+    paste(
+      "Folgende Variablen fehlen im Masterfile:",
+      paste(missing_vars, collapse = ", ")
+    )
+  )
+}
+
+# 4. Nur relevante Variablen behalten ======================
+
+base_dat <- master[, vars_needed, drop = FALSE]
+
+# Nur Personen behalten, die den Job nicht gewechselt haben
+
+# Fehlende / ungültige Codes zu NA
+base_dat$pw18[base_dat$pw18 %in% c(-8, -7, -3, -2, -1)] <- NA
+base_dat$job1Y[base_dat$job1Y %in% c(-8, -7, -3, -2, -1)] <- NA
+base_dat$pw228[base_dat$pw228 %in% c(-8, -7, -3, -2, -1)] <- NA
+
+
+base_dat <- base_dat[base_dat$job1Y == 9, ]
+
+cat("Verteilung job1Y nach Filter:\n")
+print(table(base_dat$job1Y, useNA = "ifany"))
+
+# 5. t0 / t1 aufbereiten ===================================
+
+base_dat <- base_dat %>%
+  rename(
+    depr_t0 = !!criteriaVars_t0[["depr_t0"]],
+    job_t0  = !!criteriaVars_t0[["job_t0"]]
+  )
+
+# colnames(base_dat)[colnames(base_dat)==criteriaVars_t0[["depr_t0"]]]<- "depr_t0"
+
+
+if (isTRUE(use_direct_followup_vars)) {
+  base_dat <- base_dat %>%
+    rename(
+      depr_t1 = !!criteriaVars_t1_direct[["depr_t1"]],
+      job_t1  = !!criteriaVars_t1_direct[["job_t1"]],
+      sat_t1  = !!criteriaVars_t1_direct[["sat_t1"]]
+    ) %>%
+    mutate(year_t1 = year + 1)
+
+  
+} else {
+  followup_dat <- base_dat %>%
+    select(idpers, year, depr_t0, job_t0) %>%
+    rename(
+      year_t1 = year,
+      depr_t1 = depr_t0,
+      job_t1  = job_t0
+    )
+  
+  base_dat <- base_dat %>%
+    mutate(year_t1 = year + 1) %>%
+    left_join(followup_dat, by = c("idpers", "year_t1"))
+}
+
+# 6. Nur vollständige t0/t1-Fälle für Personenwahl =========
+
+
+base_dat_complete <- base_dat %>%
+  filter(
+    !is.na(depr_t0), !is.na(job_t0),
+    !is.na(depr_t1), !is.na(job_t1),
+    !is.na(sat_t1)
+  )
+
+cat("Dimensionen nach Filter auf vorhandene T0/T1-Kriterien:", dim(base_dat_complete), "\n")
+
+if (nrow(base_dat_complete) == 0) {
+  stop("Keine Fälle mit vollständigen T0- und T1-Kriterien gefunden.")
+}
+
+# 7. Eine Zeile pro Person =================================
+
+# Ordnen nach Person und Jahr (aktuellste Jahr zuerst)
+base_dat_complete <- base_dat_complete[order(base_dat_complete$idpers, 
+                                             base_dat_complete$year, decreasing = TRUE), ]
+
+
+# Berechnen Anteil fehlende Werte
+item_missing_prop <- sapply(
+  base_dat_complete[, itemsAll, drop = FALSE],
+  function(x) round(mean(is.na(x)), 3)
+)
+
+# Ausschluss Items mit zu viel fehlenden Werten
+itemsKeep <- names(item_missing_prop[item_missing_prop <= missing_item_threshold])
+length(itemsKeep)
+itemsDrop <- setdiff(itemsAll, itemsKeep)
+
+select_vars_all <- c("idpers", "year", "year_t1", "sex", "age", itemsKeep,
+                     "depr_t0", "job_t0", "depr_t1", "sat_t1") # Prädiktor ergänzen "nicht pw228 / job_t1 entfernt, da nicht mehr im Trainingsset sein soll, in person level " cat_cool
+
+
+# Nur Fälle ohne fehlende Werte
+base_dat_complete<- na.omit(base_dat_complete[, select_vars_all])
+dim(base_dat_complete)
+
+# Duplikate löschen (da neuste Jahr zuerst --> Frühere werden gelöscht)
+person_level_all<- base_dat_complete[duplicated(base_dat_complete$idpers)==FALSE, ]
+dim(person_level_all)
+
+# Werte 0, 1, 2, ... zuordnen (bei mirt führt es zu re-scalierung falls nicht Abstände von 1)
+person_level_all[, c(itemsKeep, "depr_t0", "job_t0", "depr_t1", "sat_t1")]<- 
+  lapply(person_level_all[, c(itemsKeep, "depr_t0", "job_t0", "depr_t1", "sat_t1")], function(x) {
+    uniqueValues <- sort(unique(x[!is.na(x)]))
+    match(x, uniqueValues) - 1
+  })
+
+# 7. Einteilung in training und Test set =================================
+# Training set: 1) Auswahl Itempool (Prädiktive Modelle), 2) Training IRT Modelle 
+#               für verschiedene Anzahl latenter Variablen (--> file 02_fitModels)
+# Test set: Adaptive Auswahl und Evaluation (--> File 03_predAndPerf)
+
+# Einteilen von training und test Datensatz: 
+# usedPropTest: Prozent für test (adaptive)
+# 1 - usedPropTest: Prozent für training 
+# --> können auch via Fold einteilen: 1/usedPropTest = Anzahl Folds
+
+# ## Folds bilden 
+set.seed(usedSeed)
+
+person_level_all <- data.frame(
+  fold(
+    person_level_all,
+    k = 20,
+    cat_col = c("depr_t0", "job_t0", "depr_t1", "sat_t1"),
+    method = "n_fill"
+  )
+)
+
+colnames(person_level_all)[colnames(person_level_all) == ".folds"] <- "splitTrainTest"
+person_level_all$splitTrainTest <- as.character(person_level_all$splitTrainTest)
+
+## Trainings Datensatz
+dataTrain<- person_level_all[person_level_all$splitTrainTest!="1", ]
+dim(dataTrain)
+
+## Test Datensatz
+dataTest<- person_level_all[person_level_all$splitTrainTest=="1", ]
+dim(dataTest)
+
+# 8. Speichern =================================
+
+outList<- list(items=itemsKeep, variables=select_vars_all, 
+               dataTrain=dataTrain, dataTest=dataTest)
+
+saveRDS(outList, paste0(processed_dir, "/", "data_", outName, ".rds"))
