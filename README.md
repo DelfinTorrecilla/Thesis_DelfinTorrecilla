@@ -32,7 +32,7 @@ Variable selection, prediction model estimation, multidimensional item response 
 
 Execution of adaptive prediction simulations under varying measurement-cost conditions and evaluation of prediction performance.
 
-### 03_predAndPerfOutputVisuals.R
+### 04_ToyFileCheckOutput.R
 
 Creation of tables and figures used in the empirical results section.
 
