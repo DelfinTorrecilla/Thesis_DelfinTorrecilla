@@ -1,0 +1,419 @@
+# =========================================================
+# 02_fitModels.R
+# Datensätze und Variablen Namen laden (von 01_prepareData), 
+# Modelle fitten für Vorhersage der Outcomes, Items auswählen
+# nach Permutation Wichtigkeit, Training MIRT Modelle und Auswahl des besten Models
+# =========================================================
+
+# 0. Input ================================================
+
+# Pfade und Namen
+path_data <- "./1_Data/1_Data_PW/2_Processed/data_26_06_05.rds"
+output_dir <- "./1_Data/1_Data_PW/3_Output"
+outName<- "26_06_05"
+
+# Variablen
+depVar <- "depr_t1"
+satVar <- "sat_t1"
+
+# LM Itemauswahl
+usedNrFolds <- 10
+usedSeed <- 2745
+usedAlpha<- 0
+usedNrPerm<- 50
+usedNrItems<- 10
+usedThres<- c(0, 0)
+
+# MIRT model
+usedForm<- NULL
+maxNrLatent<- 5
+usedCrit<- "bic"
+
+# 1. Pakete ================================================
+
+required_pkgs <- c("dplyr", "readr", "knitr")
+
+missing_pkgs <- required_pkgs[
+  !vapply(required_pkgs, requireNamespace, logical(1), quietly = TRUE)
+]
+
+if (length(missing_pkgs) > 0) {
+  stop(
+    paste0(
+      "Bitte zuerst diese Pakete installieren: ",
+      paste(missing_pkgs, collapse = ", ")
+    )
+  )
+}
+
+library(dplyr)
+library(knitr)
+library(readr)
+library(dedaptive)
+library(hstats)
+
+source("1_Data/1_Data_PW/additionalFunctions.R")
+
+# 2. Daten vorbereiten ===================================
+
+input <- readRDS(path_data)
+
+itemsAll <- input$items
+dataTrain <- input$dataTrain
+
+cat("Dimension dataTrain direkt nach Laden:", dim(dataTrain), "\n")
+
+cat("Check Arbeitszufriedenheit aus 01_prepareData:\n")
+print(summary(dataTrain[[satVar]]))
+print(table(is.na(dataTrain[[satVar]]), useNA = "ifany"))
+
+cat("Check depr_t1:\n")
+print(summary(dataTrain[[depVar]]))
+print(table(is.na(dataTrain[[depVar]]), useNA = "ifany"))
+
+model_vars <- c(depVar, satVar)
+
+missing_model_vars <- setdiff(model_vars, names(dataTrain))
+
+if (length(missing_model_vars) > 0) {
+  stop(
+    paste(
+      "Folgende Modellvariablen fehlen in dataTrain:",
+      paste(missing_model_vars, collapse = ", ")
+    )
+  )
+}
+
+cat("Dimension dataTrain vor Modellfilter:", dim(dataTrain), "\n")
+
+cat("N complete cases für dep/sat:\n")
+print(sum(complete.cases(dataTrain[, model_vars])))
+
+dataTrain <- dataTrain[
+  complete.cases(dataTrain[, model_vars]),
+]
+
+cat("Dimension dataTrain nach Modellfilter:", dim(dataTrain), "\n")
+
+if (nrow(dataTrain) == 0) {
+  stop("Nach complete.cases bleiben keine Trainingsfälle übrig.")
+}
+
+medDep <- median(dataTrain[[depVar]], na.rm = TRUE)
+medSat <- median(dataTrain[[satVar]], na.rm = TRUE)
+
+cat("Median Depression:", medDep, "\n")
+cat("Median Arbeitszufriedenheit:", medSat, "\n")
+
+print(table(dataTrain[[depVar]], useNA = "ifany"))
+print(table(dataTrain[[satVar]], useNA = "ifany"))
+
+dataTrain$depBin <- ifelse(dataTrain[[depVar]] >= medDep, 1, 0)
+dataTrain$satBin <- ifelse(dataTrain[[satVar]] >= medSat, 1, 0)
+
+# 3. Wichtige Items für Depression auswählen =============================
+
+vars_dep <- c(depVar, itemsAll)
+
+dataTrain_dep <- dataTrain[
+  complete.cases(dataTrain[, vars_dep]),
+]
+
+cat("N dataTrain original:", nrow(dataTrain), "\n")
+cat("N dataTrain_dep complete cases:", nrow(dataTrain_dep), "\n")
+
+if (nrow(dataTrain_dep) == 0) {
+  stop("Keine vollständigen Fälle für Depression + itemsAll.")
+}
+
+# Performance with all items
+sumAllItems <- paste(itemsAll, collapse="+")
+
+perfDep <- cvPerf(
+  fitTunedGlmnet,
+  predGlm,
+  dataTrain_dep,
+  depVar,
+  pred=sumAllItems,
+  whichModel="gaussian",
+  nrSplit=1,
+  nrFolds=usedNrFolds,
+  seed=usedSeed,
+  alpha=usedAlpha
+)
+
+perfDep$mean$srmse <- perfDep$mean$rmse / sd(dataTrain[[depVar]])
+perfDep$mean
+
+# Importance of items for depression
+impDep <- cvSplitVarImpGLm(
+  fitTunedGlmnet,
+  dataTrain_dep,
+  depVar,
+  sumAllItems,
+  seed=usedSeed,
+  m_rep=usedNrPerm,
+  nrSplit=1,
+  nrFolds=usedNrFolds,
+  alpha=usedAlpha
+)
+
+impDep <- impDep$mean[
+  order(impDep$mean$imp, decreasing = TRUE),
+]
+
+barplot(
+  impDep$imp[order(impDep$imp)],
+  names.arg=impDep$var[order(impDep$imp)],
+  horiz=T,
+  las=2,
+  main="Importance prediction depressive symptoms",
+  cex.names = 0.3,
+  xlim=c(0, 0.3)
+)
+
+png(
+  "3_Output/Abbildung_1_PermutationImportance_Depression.png",
+  width = 2200,
+  height = 1400,
+  res = 300
+)
+
+barplot(
+  impDep$imp[order(impDep$imp)],
+  names.arg = impDep$var[order(impDep$imp)],
+  horiz = TRUE,
+  las = 1,
+  xlab = "Permutation Importance",
+  main = ""
+)
+
+dev.off()
+
+
+itemsDep <- impDep$var[1:usedNrItems]
+sumItemsDep <- paste(itemsDep, collapse="+")
+
+perfDepImp <- cvPerf(
+  fitTunedGlmnet,
+  predGlm,
+  dataTrain_dep,
+  depVar,
+  pred=sumItemsDep,
+  whichModel="gaussian",
+  nrSplit=1,
+  nrFolds=usedNrFolds,
+  seed=usedSeed,
+  alpha=usedAlpha
+)
+
+perfDepImp$mean$srmse <- perfDepImp$mean$rmse / sd(dataTrain[[depVar]])
+perfDepImp$mean
+
+
+
+# 8. Wichtige Items für Arbeitszufriedenheit =============================
+
+vars_sat <- c(satVar, itemsAll)
+
+dataTrain_sat <- dataTrain[
+  complete.cases(dataTrain[, vars_sat]),
+]
+
+cat("N dataTrain_sat complete cases:", nrow(dataTrain_sat), "\n")
+
+if (nrow(dataTrain_sat) == 0) {
+  stop("Keine vollständigen Fälle für Arbeitszufriedenheit + itemsAll.")
+}
+
+perfSat <- cvPerf(
+  fitTunedGlmnet,
+  predGlm,
+  dataTrain_sat,
+  satVar,
+  pred=sumAllItems,
+  whichModel="gaussian",
+  nrSplit=1,
+  nrFolds=usedNrFolds,
+  seed=usedSeed,
+  alpha=usedAlpha
+)
+
+perfSat$mean$srmse <- perfSat$mean$rmse / sd(dataTrain[[satVar]])
+perfSat$mean
+
+impSat <- cvSplitVarImpGLm(
+  fitTunedGlmnet,
+  dataTrain_sat,
+  satVar,
+  sumAllItems,
+  seed=usedSeed,
+  m_rep=usedNrPerm,
+  nrSplit=1,
+  nrFolds=usedNrFolds,
+  alpha=usedAlpha
+)
+
+impSat <- impSat$mean[
+  order(impSat$mean$imp, decreasing = TRUE),
+]
+
+barplot(
+  impSat$imp[order(impSat$imp)],
+  names.arg=impSat$var[order(impSat$imp)],
+  horiz=T,
+  las=2,
+  main="Importance to predict job satisfaction",
+  cex.names = 0.3,
+  xlim=c(0, 0.06)
+)
+
+
+png(
+  "3_Output/Abbildung_2_PermutationImportance_Arbeitszufriedenheit.png",
+  width = 2200,
+  height = 1400,
+  res = 300
+)
+
+barplot(
+  impSat$imp[order(impSat$imp)],
+  names.arg = impSat$var[order(impSat$imp)],
+  horiz = TRUE,
+  las = 1,
+  xlab = "Permutation Importance",
+  main = ""
+)
+
+dev.off()
+
+
+itemsSat <- impSat$var[1:usedNrItems]
+
+sumItemsSat <- paste(itemsSat, collapse="+")
+
+perfSatImp <- cvPerf(
+  fitTunedGlmnet,
+  predGlm,
+  dataTrain_sat,
+  satVar,
+  pred=sumItemsSat,
+  whichModel="gaussian",
+  nrSplit=1,
+  nrFolds=usedNrFolds,
+  seed=usedSeed,
+  alpha=usedAlpha
+)
+
+perfSatImp$mean$srmse <- perfSatImp$mean$rmse / sd(dataTrain[[satVar]])
+perfSatImp$mean
+
+# 8.2 Performance chosen items ####
+
+itemsChosen <- union(itemsDep, itemsSat)
+sumItemsChosen <- paste(itemsChosen, collapse = "+")
+
+itemOverview <- data.frame(
+  item = itemsChosen,
+  inDepressionModel = itemsChosen %in% itemsDep,
+  inSatModel = itemsChosen %in% itemsSat
+)
+
+cat("\n=============================\n")
+cat("Final verwendete Items\n")
+cat("=============================\n")
+
+cat("\nItems Depression:\n")
+knitr::kable(data.frame(itemsDep))
+
+cat("\nItems Arbeitszufriedenheit:\n")
+knitr::kable(data.frame(itemsSat))
+
+cat("\nFinale Items (union):\n")
+knitr::kable(data.frame(itemsChosen))
+
+cat("\nAnzahl finale Items:\n")
+print(length(itemsChosen))
+
+# Performance depression
+perfDepChosen <- cvPerf(
+  fitTunedGlmnet,
+  predGlm,
+  dataTrain_dep,
+  depVar,
+  pred = sumItemsChosen,
+  whichModel = "gaussian",
+  nrSplit = 1,
+  nrFolds = usedNrFolds,
+  seed = usedSeed,
+  alpha = usedAlpha
+)
+
+perfDepChosen$mean$srmse <- perfDepChosen$mean$rmse / sd(dataTrain[[depVar]])
+perfDepChosen$mean
+
+# Performance Arbeitszufriedenheit
+perfSatChosen <- cvPerf(
+  fitTunedGlmnet,
+  predGlm,
+  dataTrain_sat,
+  satVar,
+  pred = sumItemsChosen,
+  whichModel = "gaussian",
+  nrSplit = 1,
+  nrFolds = usedNrFolds,
+  seed = usedSeed,
+  alpha = usedAlpha
+)
+
+perfSatChosen$mean$srmse <- perfSatChosen$mean$rmse / sd(dataTrain[[satVar]])
+perfSatChosen$mean
+
+# 9. Fit IRT model ####
+
+# Reihenfolge gemäss Betreuer:
+# zuerst Kriterien, dann Arbeitsbedingungen
+mirtVars <- c(depVar, satVar, itemsChosen)
+
+dataTrain_mirt <- dataTrain[
+  complete.cases(dataTrain[, mirtVars]),
+]
+
+if (nrow(dataTrain_mirt) == 0) {
+  stop("Keine vollständigen Fälle für MIRT-Modell.")
+}
+
+mirtModels <- aicBicVaryingNumberLatent(
+  items = mirtVars,
+  data = dataTrain_mirt,
+  nLatent = 1:maxNrLatent,
+  technical = list(NCYCLES = 20000)
+)
+
+# Extract AIC/BIC table
+mirtTab <- mirtModels$tabAic
+mirtTab
+
+# Find best number of latent variables
+bestNumberLatentAic <- mirtTab$nLatent[
+  mirtTab[[usedCrit]] <= min(mirtTab[[usedCrit]])
+]
+
+bestModel <- mirtModels$models[[bestNumberLatentAic]]
+
+# 10. Prepare output ####
+
+outList <- list(
+  mirtVars = mirtVars, 
+  itemsChosen = itemsChosen,
+  depVar = depVar,
+  satVar = satVar,
+  models = mirtModels$models,
+  tabAicBic = mirtTab,
+  bestModel = bestModel
+)
+
+saveRDS(
+  outList,
+  paste0(output_dir, "/models_", outName, ".rds")
+)
