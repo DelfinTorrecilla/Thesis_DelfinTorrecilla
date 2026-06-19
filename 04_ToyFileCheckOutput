@@ -1,0 +1,68 @@
+
+
+
+
+outPredWide<- readRDS("3_Output/full_analysis_results_26_06_05_wide.rds")
+outPredFine<- readRDS("3_Output/full_analysis_results_26_06_05_fine_fine.rds")
+
+
+extractTables<- function(outPred, whichCost=NULL){
+  cat("Performance")
+  perfTab<- outPred$perfAll
+  perfSeq<- perfTab[perfTab$type=="dedaptive", ]
+  perfFix<- perfTab[perfTab$type=="all", ]
+  
+  plot(perfSeq$cM, perfSeq$totCost, ylim=c(0, 0.8), type="b")
+  points(perfFix$cM, perfFix$totCost, col="red", type="b")
+  plot(perfSeq$nItems, perfSeq$acc_mean, ylim=c(0, 1))
+  abline(h=max(perfFix$acc_mean), col="red")
+  cat("\n")
+  cat("Prediction")
+  
+  predTab<- outPred$predAll
+  predTab$cM<- as.character(predTab$cM)
+  predSeq<- predTab[predTab$type=="dedaptive", ]
+  print(table(predSeq$cM, predSeq$nItems))
+  
+  if(is.null(whichCost)==F){
+    predSeqChosen<- predSeq[predSeq$cM==whichCost, ]
+    return(list(perf=perfSeq, pred=predSeq, predChosen=predSeqChosen))
+  }
+  return(list(perf=perfSeq, pred=predSeq))
+}
+
+
+resWide<- extractTables(outPredWide)
+resFine<- extractTables(outPredFine, whichCost="0.025")
+# predTab <- outPredFine$predAll
+perfSeq <- resFine$perf
+
+predChosen<- resFine$predChosen
+tabItems<- data.frame(table(predChosen$combItems[predChosen$nItems<15]))
+tabItems$FreqRel<- tabItems$Freq/nrow(predChosen)
+tabItems$Var1<- as.character(tabItems$Var1)
+tabItems
+
+nAllItemsChosen<- sum(predChosen$nItems>=15)
+
+tabItems<- rbind(tabItems, NA)
+tabItems[nrow(tabItems), 1]<- "all Items"
+tabItems[nrow(tabItems), 2] <- nAllItemsChosen
+tabItems[nrow(tabItems), 3] <- nAllItemsChosen/nrow(predChosen)
+
+tabItems
+
+plot(perfSeq$cM, perfSeq$totCost, ylim=c(0, 0.8))
+
+
+
+# predTab<- outPred$predAll
+
+table(predSeq$nItems)
+
+
+
+
+
+predSeqChosen<- predSeq[predSeq$cM>=0.025 & predSeq$cM<0.03 & predSeq$nItems<15, ]
+table(predSeqChosen$combItems)
